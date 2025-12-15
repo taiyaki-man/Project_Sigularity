@@ -16,3 +16,13 @@
 *.pidb
 *.booproj
 *.svd
+
+# --- LLMUnity / モデル / ネイティブを Git から除外 ---
+Assets/StreamingAssets/undreamai-v1.2.6-llamacpp/
+Assets/StreamingAssets/LLMModels/
+
+# TextMeshPro のでかいフォントアセットは Git に入れない
+Assets/Arts/*SDF.asset
+# macOS
+.DS_Store
+Assets/.DS_Store
