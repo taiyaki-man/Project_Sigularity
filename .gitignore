@@ -22,7 +22,7 @@ Assets/StreamingAssets/undreamai-v1.2.6-llamacpp/
 Assets/StreamingAssets/LLMModels/
 
 # TextMeshPro のでかいフォントアセットは Git に入れない
-Assets/Arts/*SDF.asset
+Assets/Arts/Fonts/*SDF.asset
 # macOS
 .DS_Store
 Assets/.DS_Store
