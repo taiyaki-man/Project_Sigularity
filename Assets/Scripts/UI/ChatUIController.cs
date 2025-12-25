@@ -16,6 +16,7 @@ public class ChatUIController : MonoBehaviour
 
     private async void Start()
     {
+        AppendSystemLine("シグレとの接続を開始しています…");
         // モデルの準備が終わるのを待つ
         await LLM.WaitUntilModelSetup();
 

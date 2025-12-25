@@ -17,3 +17,4 @@ MonoBehaviour:
   discoveredMotive: 0
   discoveredHiddenTruth: 0
   progress: 0
+  trust: 15

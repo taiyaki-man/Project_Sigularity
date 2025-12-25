@@ -11,7 +11,7 @@ namespace ProjectSingularity.Dialogues
     }
 
     [CreateAssetMenu(menuName = "ProjectSingularity/Dialogue/Investigation State",fileName = "InvestigationState")]
-    public class InvestigationState : ScriptableObject
+    public class InvestigationStateSO : ScriptableObject
     {
         [Header("Phase")]
         public InvestigationPhase phase = InvestigationPhase.Phase0;
@@ -23,6 +23,9 @@ namespace ProjectSingularity.Dialogues
 
         [Range(0, 100)]
         public int progress = 0;
+
+        [Header("Social Params")]
+        [Range(0, 100)] public int trust = 0;    // シグレの信頼度
 
         /// <summary>flagからPhaseを自動的に更新する</summary>
         public void EvaluatePhase()

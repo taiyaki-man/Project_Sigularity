@@ -1,8 +1,11 @@
 using System;
 using System.Threading.Tasks;
 using System.Linq;
+using System.IO;
+using System.Text;
 using UnityEngine;
 using LLMUnity; // LLMUnityの名前空間
+using ProjectSingularity.Dialogues.Knowledge;
 
 namespace ProjectSingularity.Dialogues
 {
@@ -19,7 +22,19 @@ namespace ProjectSingularity.Dialogues
         [SerializeField] private int maxTurnsForContext = 6;
 
         [Header("Investigation State")]
-        [SerializeField] private InvestigationState investigationState; 
+        [SerializeField] private InvestigationStateSO investigationState; 
+
+        [Header("Knowledge DataBase")]
+        [SerializeField] private SigureKnowledgeDatabaseSO knowledgeDatabase;
+
+        [Header("Debug Pronpt")]
+        [SerializeField] private bool dumpPronptToFile = false;
+        [SerializeField] private bool dumpResponsesToFile = true;
+        [SerializeField] private bool includeTranscriptInDump = true;
+
+        public string LastPrompt { get; private set; }
+        public string LastResponseRaw { get; private set; }
+        public string LastDumpPath { get; private set; }
 
         private ConversationMemory memory;
         private PromptBuilder promptBuilder;
@@ -65,34 +80,70 @@ namespace ProjectSingularity.Dialogues
                 return new DialogueTurn(playerText, "……何か仰ってくださいませんか。");
 
             // 名前を尋ねる質問だけは固定応答とする（小型モデルの安定性向上のため）
-            if (IsNameQuestion(playerText))
-            {
-                var turn0 = new DialogueTurn(playerText, "シグレです。確認は以上でしょうか。");
-                memory.AddTurn(turn0);
-                return turn0;
-            }
+            // if (IsNameQuestion(playerText))
+            // {
+            //     var turn0 = new DialogueTurn(playerText, "……シグレです。");
+            //     memory.AddTurn(turn0);
+            //     return turn0;
+            // }
 
             string transcript = memory.BuildRecentTranscript();
-            string prompt = promptBuilder.BuildPrompt(playerText, transcript, investigationState);
 
+            //質問→開示情報の決定
+            var disclosure = DisclosureGate.Build(playerText, investigationState, knowledgeDatabase);
+            // 直接返答モードなら、LLM呼び出しをスキップ
+            if (disclosure.shouldBypassLlm)
+            {
+                var turnBypass = new DialogueTurn(playerText, disclosure.directReply);
+                memory.AddTurn(turnBypass);
+                return turnBypass;
+            }
+            
+            // プロンプトの組み立て
+            string prompt = promptBuilder.BuildPrompt(playerText, transcript, investigationState, disclosure.knowledgeBlock);
+            LastPrompt = prompt;
+
+            // デバッグ用：プロンプトをファイルに保存
+            string turnDumpPath = null;
+            if (dumpPronptToFile || dumpResponsesToFile)
+            {
+                turnDumpPath = CreateTurnDumpFile(playerText);
+                LastDumpPath = turnDumpPath;
+                WriteTurnDumpHeader(turnDumpPath, playerText, transcript, prompt);
+            }
+
+
+            // LLM呼び出し
+            string rawResponse = null;
             string npcText;
             try
             {
                 // LLMUnityの呼び出し（プロジェクトの使い方によりメソッド名が違う場合あり）
-                // 多くのケースで llmCharacter.Chat(prompt) / llmCharacter.Complete(prompt) のような関数になります。
-                npcText = await llmCharacter.Complete(prompt);
+                rawResponse = await llmCharacter.Complete(prompt);
 
 
                 // ① echo（プロンプト全文）が返ってきた場合は除去
-                npcText = StripEcho(npcText, prompt);
+                var processed = StripEcho(rawResponse, prompt);
 
                 // ② 仕上げ（ロールや空白を整える）
-                npcText = PostProcess(npcText);
+                processed = PostProcess(processed);
+
+                npcText = processed;
             }
             catch (Exception e)
             {
                 Debug.LogError($"[DialogueDirector] LLM call failed: {e}");
+                rawResponse = null;
                 npcText = "……通信ではなく内部処理の問題のようですね。少し、困りました。";
+            }
+
+            // ③ 最終レスポンスの保存
+            LastResponseRaw = rawResponse;
+
+            // デバッグ用：レスポンスの生データをファイルに保存
+            if (!string.IsNullOrEmpty(turnDumpPath) && (dumpPronptToFile || dumpResponsesToFile))
+            {
+                AppendTurnDumpResponse(turnDumpPath, rawResponse, npcText);
             }
 
             var turn = new DialogueTurn(playerText, npcText);
@@ -167,11 +218,103 @@ namespace ProjectSingularity.Dialogues
             i = text.IndexOf("シグレ：");
             if (i >= 0) text = text.Substring(0, i).Trim();
 
+            // 「\n会話例」「会話例」「\n重要」や「重要」が出たらそこで打ち切り
+            i = text.IndexOf("\n会話例");
+            if (i >= 0) text = text.Substring(0, i).Trim();
+            i = text.IndexOf("会話例");
+            if (i >= 0) text = text.Substring(0, i).Trim();
+            i = text.IndexOf("\n重要");
+            if (i >= 0) text = text.Substring(0, i).Trim();
+            i = text.IndexOf("重要");
+            if (i >= 0) text = text.Substring(0, i).Trim();
+
             // 「（」が出たらそこで打ち切り
             int p = text.IndexOf('（');
             if (p >= 0) text = text.Substring(0, p).Trim();
 
             return text;
         }
+
+        private string CreateTurnDumpFile(string playerText)
+        {
+            string dir = Path.Combine(Application.persistentDataPath, "PromptDumps");
+            Directory.CreateDirectory(dir);
+
+            string stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
+            string safeHead = SanitizeFileName(Shorten(playerText, 18));
+            return Path.Combine(dir, $"{stamp}_{safeHead}_turn.txt");
+        }
+
+        private void WriteTurnDumpHeader(string path, string playerText, string transcript, string prompt)
+        {
+            try
+            {
+                var sb = new StringBuilder();
+                sb.AppendLine("=== Timestamp ===");
+                sb.AppendLine(DateTime.Now.ToString("O"));
+                sb.AppendLine();
+
+                sb.AppendLine("=== Player ===");
+                sb.AppendLine(playerText ?? "");
+                sb.AppendLine();
+
+                if (includeTranscriptInDump)
+                {
+                    sb.AppendLine("=== Transcript (recent) ===");
+                    sb.AppendLine(transcript ?? "");
+                    sb.AppendLine();
+                }
+
+                sb.AppendLine("=== Prompt ===");
+                sb.AppendLine(prompt ?? "");
+                sb.AppendLine();
+
+                File.WriteAllText(path, sb.ToString(), Encoding.UTF8);
+                Debug.Log($"[TurnDump] Created: {path}");
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[TurnDump] Create failed: {e.Message}");
+            }
+        }
+
+        private void AppendTurnDumpResponse(string path, string rawResponse, string processedResponse)
+        {
+            try
+            {
+                var sb = new StringBuilder();
+
+                sb.AppendLine("=== Response (raw) ===");
+                sb.AppendLine(rawResponse ?? "");
+                sb.AppendLine();
+
+                sb.AppendLine("=== Response (post-processed) ===");
+                sb.AppendLine(processedResponse ?? "");
+                sb.AppendLine();
+
+                File.AppendAllText(path, sb.ToString(), Encoding.UTF8);
+                Debug.Log($"[TurnDump] Appended response: {path}");
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[TurnDump] Append failed: {e.Message}");
+            }
+        }
+
+
+        private static string Shorten(string s, int max)
+        {
+            if (string.IsNullOrEmpty(s)) return "empty";
+            s = s.Replace("\n", " ").Replace("\r", " ").Trim();
+            return s.Length <= max ? s : s.Substring(0, max);
+        }
+
+        private static string SanitizeFileName(string s)
+        {
+            foreach (char c in Path.GetInvalidFileNameChars())
+                s = s.Replace(c, '_');
+            return s;
+        }
+
     }
 }
